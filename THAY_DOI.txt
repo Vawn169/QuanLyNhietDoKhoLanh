@@ -1,0 +1,121 @@
+VanVaPhu - BAN DA SUA (giai nen DE LEN thu muc project VanVaPhu, cho phep ghi de)
+=====================================================================================
+
+CACH AP DUNG
+  1. Dong NetBeans (hoac Clean & Build sau khi chep xong).
+  2. Giai nen file zip nay de len thu muc project VanVaPhu (cung cap voi src/, nbproject/).
+  3. NetBeans: Clean and Build. Chay: chuot phai MonitorServer.java > Run File, roi SensorLauncher.java > Run File
+     (hoac Run Project - main class da duoc sua thanh coldstorage.server.MonitorServer).
+  LUU Y: config.properties duoc dat lai kho dong = -18 ~ -15 (ban cu la -16 ~ -15 nen kho dong bao dong lien tuc).
+         File log cu (logs/Kho___ng_A.log ...) giu nguyen; log moi ghi vao file co ten khong dau, vd Kho_Dong_A_528330cc.log.
+
+FILE MOI (3)
+  sensor/CoolingSystemBehavior.java   Cam bien mo phong he thong lam lanh co nhiet do van hanh (setpoint) rieng, thinh thoang co su co roi duoc xu ly.
+  server/OfflineTracker.java          Phat hien kho MAT TIN HIEU (im lang > max(15s, 3 x chu ky gui)).
+  util/AlertStateTracker.java         Chi canh bao khi CHUYEN TRANG THAI (bat dau / nhac lai moi 5 phut / da hoi phuc).
+
+FILE DA SUA (13)
+  server/MonitorServer.java        Mat tin hieu; bo dem canh bao trong bo nho (khong query DB o moi goi tren EDT); hang doi co gioi han; tat may sach;
+                                   hien ngay cho du lieu cu; kiem tra ten/ma/loai kho khi them cam bien; bip chi khi bat dau su co.
+  server/SensorHandler.java        Kiem tra re truoc (IP > timestamp > HMAC > replay); canh bao theo su kien; dem goi bi tu choi.
+  server/SecurityUtil.java         Chong replay that su (timestamp phai tang dan theo cam bien); khoa & whitelist doc tu config.
+  server/TemperatureChartPanel.java  Ngat duong ve khi co khoang trong > 30s (het duong thang gia noi 2 lan chay).
+  server/StatsPanel.java           Truy van DB tren luong nen (SwingWorker), khong con dung giao dien.
+  server/AdminPanel.java           Doi nguong -> lam moi bang ngay; nhiet do mac dinh theo loai kho; thong bao loi tu server.
+  server/ProductPanel.java         Khop ten kho khong phan biet hoa/thuong; hoi lai khi gan san pham khong hop loai kho / kho chua co du lieu.
+  sensor/SensorClient.java         Loi mang thoang qua khong con lam chet luong cam bien; khoa HMAC doc tu config; bo dai an toan cung.
+  util/ConfigUtil.java             Kiem tra min<max; doc du 4 gia tri roi moi gan; luu khong lam mat khoa khac; them shared.secret, allowed.ips.
+  util/AlertNotifier.java          Cac loai thong bao (canh bao / nhac lai / da hoi phuc / mat tin hieu); ten file log khong dau + ma bam, khong trung.
+  util/DatabaseUtil.java           Them 2 index (kho, trang thai).
+  util/ProductUtil.java            Them 2 san pham duoc pham mau (vac-xin 2~8, thuoc bao quan noi mat 8~15) khi tao DB moi.
+  model/TemperatureData.java       toString hien gio doc duoc; tu choi nhiet do NaN/vo cuc.
+
+CAU HINH TUY CHON (them vao config.properties neu can)
+  shared.secret=<khoa HMAC>            (mac dinh COLDSTORAGE-2026-SECRET; doi o CA Sensor va Server)
+  allowed.ips=127.0.0.1,192.168.1.50   (mac dinh chi may local)
+
+GIU NGUYEN (8): Product, AlertUtil, CryptoUtil, TemperatureBehavior, RandomWalkBehavior, AutoRecoveryBehavior, AlwaysFaultyBehavior, SensorLauncher.
+
+=====================================================================================
+DOT CAP NHAT MOI (6 tinh nang mo rong, uu tien theo do rui ro thap -> cao)
+
+FILE MOI (7)
+  server/AlertHistoryPanel.java     Tab "Lich su su co": kho, bat dau, ket thuc, thoi luong, nhiet do dinh diem. Doc tu alert_history.
+  server/LoginDialog.java           Hoi mat khau truoc khi mo "Quan tri" (chi hoi neu da tung dat mat khau qua SecuritySettingsDialog).
+  server/SecuritySettingsDialog.java  Doi mat khau Quan tri (SHA-256 + salt) va cau hinh Telegram (bat/tat, bot token, chat id, gui thu).
+  util/TrendTracker.java            Canh bao SOM theo xu huong: hoi quy tuyen tinh tren cua so truot, du bao sap cham nguong trong ~5 phut.
+  util/TelegramNotifier.java        Gui thong bao day THAT qua Telegram Bot API (java.net.http.HttpClient co san trong JDK, khong can jar ngoai).
+  util/ReportExportUtil.java        Xuat bao cao CSV (tong hop theo kho + lich su su co) tu nut "Xuat bao cao" o tab Thong ke.
+  build_installer.bat               Script ho tro dong goi .exe bang jpackage (can WiX Toolset v3.x tren Windows) - xem chu thich dau file.
+
+FILE SUA (7)
+  server/MonitorServer.java         DatabaseUtil.initDatabase()/ProductUtil.init() chay TRUOC initUI() (sua thu tu khoi dong, tranh race
+                                     condition voi StatsPanel truy van DB truoc khi bang duoc tao). Them nut "Bao mat" + dang nhap truoc khi
+                                     mo Quan tri. Them tab "Lich su su co". Them trang thai "SAP VUOT NGUONG" (mau vang cam) tren bang.
+  server/SensorHandler.java         Goi du phong (BACKUP-...) KHONG con di qua AlertStateTracker (tranh gui "DA HOI PHUC" gia trong khi
+                                     cam bien that van MAT TIN HIEU). Ghi alert_history o START/REMIND/RECOVERED. Goi TrendTracker cho goi that.
+  server/StatsPanel.java            Them nut "Xuat bao cao (CSV)".
+  util/DatabaseUtil.java            Them bang alert_history + cac ham start/update/closeAlertIncident, getAlertHistory, getWarehouseReport.
+  util/ConfigUtil.java              Them cau hinh Telegram (telegram.enabled/bot.token/chat.id) va mat khau Quan tri (admin.password.hash/salt,
+                                     SHA-256 + salt ngau nhien, KHONG luu plaintext). save() dung chung 1 ham saveProperties() gop khoa, khong
+                                     con lam mat cac khoa khac khi luu.
+  util/AlertNotifier.java           Them sendTrendWarning() (canh bao som). dispatch() goi them TelegramNotifier.send() (bat dong bo, khong
+                                     chan luong xu ly goi tin neu Telegram loi/cham mang).
+
+GHI CHU QUAN TRONG
+  - CSV, khong phai .xlsx/.pdf that: moi truong dong goi khong co san Apache POI / iText de tai ve khi build, nen "Xuat bao cao" ra file .csv
+    (Excel mo truc tiep duoc, luu lai thanh .xlsx tu Excel neu can). Muon co .xlsx/.pdf that phai tu them cac jar tuong ung vao dist/lib.
+  - build_installer.bat CHUA duoc chay thu tren Windows that (moi truong tao ra ban cap nhat nay la Linux, khong dung de build .exe cho
+    Windows duoc) - da kiem tra ky logic Java (javac sach + chay thu bang Xvfb) nhung ban than script .bat va buoc jpackage/WiX can ban
+    tu chay thu tren may Windows cua ban truoc khi dung de nop/demo.
+  - Cau hinh Telegram/mat khau Quan tri duoc luu trong config.properties (dang hash, khong phai mat khau goc) - dung xoa file nay neu da dat.
+
+=====================================================================================
+DOT VA LOI (2 loi logic)
+
+1. "Nhiet do dinh diem" trong Lich su su co sai
+   - Truoc: updateAlertPeak() chi goi khi co REMIND (sau 5 phut vuot nguong) nen su co ngan chi ghi nhiet do luc bat dau.
+   - Nay: SensorHandler goi updateAlertPeak() o MOI goi WARNING that. DatabaseUtil so sanh do lech so voi dai an toan
+     cua kho (cao hon max thi cang cao cang te, thap hon min thi cang thap cang te), chi ghi khi te hon dinh hien tai.
+     Co cache trong bo nho (OPEN_PEAK) nen khong query DB o moi goi; tu doc lai tu DB neu khoi dong lai giua luc su co dang mo.
+   - Da kiem tra: -19 -> -25 -> -23 -> -17 (kho dong -18~-15) ghi peak = -25.0; su co am len -10 -> -8 -> -12 ghi peak = -8.0.
+   - Doi chu ky ham: updateAlertPeak(ten, nhiet_do, safeMin, safeMax) (bo tham so isDong).
+
+2. Nut "Gui thu" Telegram tu y bat thong bao that
+   - Truoc: goi ConfigUtil.setTelegramConfig(true, ...) -> ghi enabled=true xuong config.properties.
+   - Nay: TelegramNotifier.sendTest(token, chatId) gui truc tiep bang gia tri tren form, KHONG ghi config va khong phu thuoc
+     o "Kich hoat". Chi nut "Luu cau hinh" moi thay doi config.
+
+CHUA SUA (theo yeu cau chi sua 2 loi tren): 4 loi du phong (BackupLauncher khong reload nguong, isWarehouseActive tra false khi loi doc DB,
+backupSensorId() trung ma khi ten gan giong, nguong 20 giay co dinh).
+
+BO SUNG SAU DANH GIA LAI
+  - SensorHandler: START mo su co trong DB TRUOC khi gui thong bao; RECOVERED dong su co truoc khi gui thong bao
+    (tranh goi WARNING te hon toi tu luong khac trong luc dang gui thong bao bi mat dinh diem).
+  - TelegramNotifier: sua cau log "Da bat nhung..." cho dung khi goi tu nut "Gui thu".
+  - Da kiem tra qua SensorHandler that (khong chi mo phong logic): kho dong, kho mat, su co 1 goi, va Gui thu khong doi config.
+  - CON TON TAI (co san tu ban goc, chua sua): su co dang mo bi "mo coi" khi khoi dong lai server; xoa kho khong dong su co dang mo.
+
+=====================================================================================
+DOT VA LOI 6 LOI CON LAI (4 loi du phong + su co mo coi + xoa kho)
+
+DU PHONG (backup/*, util/BackupUtil, util/ProductUtil, util/ConfigUtil, util/DatabaseUtil)
+  1. Nguong cu o tien trinh du phong: BackupLauncher goi ConfigUtil.reload() + ProductUtil.refresh() MOI VONG (10s).
+     Neu doc DB loi -> GIU snapshot cu (truoc day reload() thay bang snapshot RONG -> moi kho bi ap nguong chung sai; ap dung ca cho Server).
+  2. DB khoa lam luong du phong chet: DatabaseUtil.getWarehouseState() tra ACTIVE / INACTIVE / UNKNOWN (loi doc). Chi dung luong khi INACTIVE.
+     queryActiveWarehouseTypes() va getRecentPrimaryLogs() NEM SQLException (khong tra rong) -> launcher giu nguyen cac luong, client bo qua vong.
+     Them PRAGMA busy_timeout = 8000 (Server va BackupLauncher la 2 tien trinh cung mo 1 file .db).
+     Launcher tu dung lai luong da tu dung khi kho duoc dang ky lai. Da bo: isWarehouseActive(), getLastLogExcludingPrefix().
+  3. Trung ma cam bien du phong: backupSensorId() = BACKUP-<toi da 12 ky tu doc duoc, bo dau tieng Viet>-<10 hex SHA-256 cua TEN DAY DU>.
+  4. Nguong 20s co dinh: nguong = max(20s, 3 x chu ky gui THUC TE), chu ky = trung vi khoang cach 8 goi that gan nhat (bo khoang lang > 10 phut).
+     Cung cong thuc voi OfflineTracker cua Server (MIN 15s) nhung MIN cao hon 5s -> du phong luon tiep quan SAU khi Server bao mat tin hieu.
+
+SU CO MO COI + XOA KHO (util/DatabaseUtil, util/AlertStateTracker, server/MonitorServer)
+  5. Khoi dong Server: DatabaseUtil.reconcileOpenIncidents() -> kho CON hoat dong: su co moi nhat duoc NOI TIEP (AlertStateTracker.resume),
+     nen khong mo su co trung va goi SAFE dau tien dong DUNG su co cu; su co cu hon cua cung kho (mo coi tu loi truoc): dong,
+     ket thuc = luc su co ke tiep bat dau; kho DA XOA: dong, ket thuc = lan cuoi cam bien that gui du lieu.
+     Neu Server tat lau roi bat lai, thoi luong su co bao gom ca khoang Server tat (khong co du lieu de biet chinh xac hon).
+  6. Xoa kho: dong moi su co dang mo (closeOpenIncidents), xoa trang thai AlertStateTracker + TrendTracker (tao lai kho trung ten se bao START dung).
+     Neu tick "xoa luon lich su": xoa ca lich su su co (alert_history) cua kho do.
+
+CON TON TAI (chua sua): isReplay loai goi hop le den tre giua cac luong xu ly song song (canh cua thiet ke, it gap voi chu ky vai giay).

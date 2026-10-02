@@ -18,8 +18,6 @@ import java.util.Set;
  */
 public class OfflineTracker {
 
-    public static final long MIN_MS = 15_000;
-    public static final int FACTOR = 3;
     private static final long MAX_INTERVAL_SAMPLE_MS = 10 * 60_000;
 
     /** Một kho vừa chuyển sang trạng thái mất tín hiệu */
@@ -74,7 +72,8 @@ public class OfflineTracker {
             String warehouse = e.getKey();
             if (offline.contains(warehouse)) continue;
             long lastSeenAt = e.getValue()[0];
-            long limit = Math.max(MIN_MS, FACTOR * e.getValue()[1]);
+            long limit = Math.max(coldstorage.util.ConfigUtil.getOfflineMinSec() * 1000, 
+                (long)(coldstorage.util.ConfigUtil.getOfflineFactor() * e.getValue()[1]));
             if (now - lastSeenAt > limit) {
                 offline.add(warehouse);
                 result.add(new Lost(warehouse, lastSeenAt, muted.contains(warehouse)));

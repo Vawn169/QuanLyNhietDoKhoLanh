@@ -29,22 +29,29 @@ public final class ReportExportUtil {
     }
 
     /** Ghi báo cáo ra file CSV (UTF-8 kèm BOM để Excel tự nhận đúng font tiếng Việt) */
-    public static void export(File file) throws IOException {
+    public static void export(File file, Long fromMillis, Long toMillis) throws IOException {
         try (OutputStreamWriter osw = new OutputStreamWriter(new FileOutputStream(file), StandardCharsets.UTF_8);
              PrintWriter pw = new PrintWriter(osw)) {
             pw.write('\uFEFF'); // BOM - thiếu dòng này Excel (Windows) có thể hiện sai dấu tiếng Việt
 
             pw.println("BAO CAO GIAM SAT KHO LANH - Xuat luc " + SDF.format(new Date()));
+            if (fromMillis != null && toMillis != null) {
+                pw.println("Tu ngay: " + SDF.format(new Date(fromMillis)) + " den ngay: " + SDF.format(new Date(toMillis)));
+            }
             pw.println();
 
             pw.println("1. TONG HOP THEO KHO");
-            pw.println(csvRow("Kho", "Loai kho", "San pham", "Tong so lan do", "So lan canh bao", "Ti le canh bao (%)"));
-            List<DatabaseUtil.WarehouseReportRow> report = DatabaseUtil.getWarehouseReport();
+            pw.println(csvRow("Kho", "Loai kho", "San pham", "Tong so lan do", "So lan canh bao", "Ti le trong nguong (%)", 
+                              "Nhiet do MIN", "Nhiet do AVG", "Nhiet do MAX", "Tong thoi gian su co (phut)", "MKT (C)"));
+            List<DatabaseUtil.WarehouseReportRow> report = DatabaseUtil.getWarehouseReport(fromMillis, toMillis);
             for (DatabaseUtil.WarehouseReportRow r : report) {
                 String typeText = "DONG".equalsIgnoreCase(r.type) ? "Kho dong" : "Kho mat";
+                String mktStr = r.mkt == null ? "" : String.format("%.2f", r.mkt);
                 pw.println(csvRow(r.name, typeText, r.products.isEmpty() ? "(chua gan)" : r.products,
                         String.valueOf(r.totalReadings), String.valueOf(r.warningReadings),
-                        String.format("%.1f", r.warningPercent())));
+                        String.format("%.1f", r.safePercent()),
+                        String.format("%.1f", r.minTemp), String.format("%.1f", r.avgTemp), String.format("%.1f", r.maxTemp),
+                        String.valueOf(r.totalAlertMinutes), mktStr));
             }
             pw.println();
 
@@ -52,6 +59,10 @@ public final class ReportExportUtil {
             pw.println(csvRow("Kho", "Bat dau", "Ket thuc", "Thoi luong (phut)", "Nhiet do dinh diem (C)"));
             List<DatabaseUtil.AlertIncident> incidents = DatabaseUtil.getAlertHistory(500);
             for (DatabaseUtil.AlertIncident inc : incidents) {
+                // ... (filtering incidents by date if necessary, but request didn't explicitly say to filter the recent incidents list, just the warehouse summary. I will just leave it as is or add simple filtering if fromMillis is specified).
+                if (fromMillis != null && (inc.endedAt > 0 && inc.endedAt < fromMillis)) continue;
+                if (toMillis != null && inc.startedAt > toMillis) continue;
+                
                 boolean ongoing = inc.isOngoing();
                 long endMs = ongoing ? System.currentTimeMillis() : inc.endedAt;
                 double minutes = Math.max(0, (endMs - inc.startedAt) / 60000.0);

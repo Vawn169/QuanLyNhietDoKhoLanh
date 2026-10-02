@@ -21,13 +21,14 @@ public class AlertHistoryPanel extends JPanel {
 
     private final DefaultTableModel tableModel;
     private final JLabel summaryLabel = new JLabel(" ");
+    private List<DatabaseUtil.AlertIncident> currentIncidents;
 
     public AlertHistoryPanel() {
         setLayout(new BorderLayout(8, 8));
         setBorder(BorderFactory.createEmptyBorder(10, 10, 10, 10));
 
         tableModel = new DefaultTableModel(
-                new Object[]{"Kho", "Bắt đầu", "Kết thúc", "Thời lượng", "Nhiệt độ đỉnh điểm"}, 0) {
+                new Object[]{"ID", "Kho", "Bắt đầu", "Kết thúc", "Thời lượng", "Nhiệt độ đỉnh điểm", "Đã xác nhận"}, 0) {
             @Override
             public boolean isCellEditable(int row, int column) {
                 return false;
@@ -36,6 +37,26 @@ public class AlertHistoryPanel extends JPanel {
         JTable table = new JTable(tableModel);
         table.setRowHeight(24);
         table.setDefaultRenderer(Object.class, new OngoingRowRenderer());
+
+        table.getColumnModel().getColumn(0).setMinWidth(0);
+        table.getColumnModel().getColumn(0).setMaxWidth(0);
+        table.getColumnModel().getColumn(0).setWidth(0);
+
+        table.addMouseListener(new java.awt.event.MouseAdapter() {
+            @Override
+            public void mouseClicked(java.awt.event.MouseEvent e) {
+                int row = table.rowAtPoint(e.getPoint());
+                int col = table.columnAtPoint(e.getPoint());
+                if (row >= 0 && col == 6) { // Cột Xác nhận
+                    int id = (int) tableModel.getValueAt(row, 0);
+                    Object val = tableModel.getValueAt(row, 6);
+                    if ("Chưa xác nhận".equals(val)) {
+                        DatabaseUtil.acknowledgeAlert(id);
+                        refresh();
+                    }
+                }
+            }
+        });
 
         JPanel top = new JPanel(new BorderLayout());
         top.add(summaryLabel, BorderLayout.WEST);
@@ -64,6 +85,7 @@ public class AlertHistoryPanel extends JPanel {
                 try {
                     List<DatabaseUtil.AlertIncident> list = get();
                     tableModel.setRowCount(0);
+                    currentIncidents = list;
                     int ongoing = 0;
                     for (DatabaseUtil.AlertIncident inc : list) {
                         boolean isOngoing = inc.isOngoing();
@@ -72,8 +94,9 @@ public class AlertHistoryPanel extends JPanel {
                         String end = isOngoing ? "Đang diễn ra" : SDF.format(new Date(inc.endedAt));
                         long durationMs = (isOngoing ? System.currentTimeMillis() : inc.endedAt) - inc.startedAt;
                         String duration = formatDuration(durationMs);
+                        String ack = inc.acknowledgedAt == null ? "Chưa xác nhận" : SDF.format(new Date(inc.acknowledgedAt));
                         tableModel.addRow(new Object[]{
-                                inc.warehouseName, start, end, duration, String.format("%.1f°C", inc.peakTemp)
+                                inc.id, inc.warehouseName, start, end, duration, String.format("%.1f°C", inc.peakTemp), ack
                         });
                     }
                     summaryLabel.setText(String.format("Tổng %d sự cố đã ghi nhận (%d đang diễn ra)",
@@ -112,6 +135,10 @@ public class AlertHistoryPanel extends JPanel {
             } else {
                 c.setBackground(row % 2 == 0 ? Color.WHITE : new Color(247, 249, 251));
                 c.setForeground(UiTheme.TEXT_DARK);
+            }
+            if (column == 6 && "Chưa xác nhận".equals(value)) {
+                c.setForeground(Color.RED); // Highlight pending acknowledge
+                c.setFont(c.getFont().deriveFont(java.awt.Font.BOLD));
             }
             return c;
         }

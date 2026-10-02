@@ -37,18 +37,8 @@ import java.util.Random;
  */
 public class BackupSensorClient implements Runnable {
 
-    private static final long POLL_MS = 5_000;                // chu kỳ kiểm tra + gửi khi đang dự phòng
-    /**
-     * Ngưỡng "cảm biến chính đã hỏng" = max(MIN_OFFLINE_MS, OFFLINE_FACTOR x chu kỳ gửi THỰC TẾ của cảm biến đó).
-     * Cùng công thức với OfflineTracker của Server (max(15s, 3x chu kỳ)) nhưng MIN cao hơn 5s, nên dự phòng luôn tiếp quản
-     * SAU khi Server đã báo mất tín hiệu. Cố định 20s là sai với cảm biến gửi thưa (vd 30s/gói -> tiếp quản nhầm ở mọi khoảng lặng).
-     */
-    private static final long MIN_OFFLINE_MS = 20_000;
-    private static final int OFFLINE_FACTOR = 3;
     private static final int INTERVAL_SAMPLES = 8;               // số gói gần nhất dùng để ước lượng chu kỳ
     private static final long MAX_INTERVAL_SAMPLE_MS = 10 * 60_000; // khoảng cách lớn hơn = khoảng lặng, không phải chu kỳ
-    private static final double PULLBACK = 0.15;               // tốc độ kéo về trung điểm mỗi POLL_MS (0..1)
-    private static final double NOISE = 0.15;                  // dao động nhỏ cho giống cảm biến thật
 
     private final String warehouseName;
     private final String warehouseType;
@@ -59,6 +49,7 @@ public class BackupSensorClient implements Runnable {
     private InetAddress address = null;
     private volatile boolean running = true;
     private boolean backupActive = false;
+    private boolean maintenanceLogged = false;
     private Double backupTemp = null;
 
     public BackupSensorClient(String warehouseName, String warehouseType, String serverHost, int serverPort) {
@@ -104,7 +95,7 @@ public class BackupSensorClient implements Runnable {
             }
 
             try {
-                Thread.sleep(POLL_MS);
+                Thread.sleep(coldstorage.util.ConfigUtil.getBackupPollSec() * 1000);
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
                 return;
@@ -123,6 +114,22 @@ public class BackupSensorClient implements Runnable {
         if (state == DatabaseUtil.WarehouseState.UNKNOWN) {
             return true;
         }
+
+        // Kiểm tra bảo trì: nếu kho đang bảo trì, không kích hoạt dự phòng,
+        // và nếu dự phòng ĐANG chạy thì dừng ngay.
+        Long maint = DatabaseUtil.getWarehouseMaintenance(warehouseName);
+        if (maint != null && System.currentTimeMillis() < maint) {
+            if (backupActive) {
+                System.out.println("[Dự phòng-" + warehouseName + "] Kho đang bảo trì, dừng chế độ dự phòng.");
+                backupActive = false;
+                backupTemp = null;
+            } else if (!maintenanceLogged) {
+                System.out.println("[Dự phòng-" + warehouseName + "] Kho đang bảo trì, bỏ qua dự phòng.");
+                maintenanceLogged = true;
+            }
+            return true;
+        }
+        maintenanceLogged = false; // reset để log lại nếu bảo trì được bật lần tiếp theo
 
         // Ném SQLException khi lỗi -> run() bỏ qua vòng này (KHÔNG rơi vào nhánh "chưa từng có dữ liệu chính")
         List<TemperatureData> recent = DatabaseUtil.getRecentPrimaryLogs(
@@ -148,9 +155,9 @@ public class BackupSensorClient implements Runnable {
         }
         backupActive = true;
 
-        double[] range = ProductUtil.getSafeRange(warehouseName, warehouseType);
+        double[] range = coldstorage.util.ProductUtil.getSafeRange(warehouseName, warehouseType);
         double target = (range[0] + range[1]) / 2.0;
-        backupTemp += (target - backupTemp) * PULLBACK + (random.nextDouble() - 0.5) * NOISE;
+        backupTemp += (target - backupTemp) * coldstorage.util.ConfigUtil.getBackupPullback() + (random.nextDouble() - 0.5) * coldstorage.util.ConfigUtil.getBackupNoise();
 
         if (address == null) {
             address = InetAddress.getByName(serverHost);
@@ -175,10 +182,11 @@ public class BackupSensorClient implements Runnable {
             long d = recentNewestFirst.get(i).getTimestamp() - recentNewestFirst.get(i + 1).getTimestamp();
             if (d > 0 && d <= MAX_INTERVAL_SAMPLE_MS) deltas.add(d);
         }
-        if (deltas.isEmpty()) return MIN_OFFLINE_MS;
+        if (deltas.isEmpty()) return coldstorage.util.ConfigUtil.getBackupOfflineMinSec() * 1000;
         Collections.sort(deltas);
         long median = deltas.get(deltas.size() / 2);
-        return Math.max(MIN_OFFLINE_MS, OFFLINE_FACTOR * median);
+        return Math.max(coldstorage.util.ConfigUtil.getBackupOfflineMinSec() * 1000, 
+            (long)(coldstorage.util.ConfigUtil.getBackupOfflineFactor() * median));
     }
 
     private double defaultStart() {

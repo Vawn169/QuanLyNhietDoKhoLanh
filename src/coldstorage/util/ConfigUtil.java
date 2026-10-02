@@ -43,6 +43,12 @@ public class ConfigUtil {
     private static volatile String adminPasswordHash = ""; // rỗng = chưa đặt mật khẩu, ai cũng vào được (như trước)
     private static volatile String adminPasswordSalt = "";
 
+    // ----- Alert Hysteresis Default -----
+    public static final String ALERT_DWELL_MINUTES_DEFAULT = "alert.dwell.minutes.default";
+    public static final String ALERT_RECOVERY_MARGIN_DEFAULT = "alert.recovery.margin.default";
+    private static volatile double alertDwellMinutesDefault = 2.0;
+    private static volatile double alertRecoveryMarginDefault = 0.5;
+
     static {
         load();
     }
@@ -57,6 +63,55 @@ public class ConfigUtil {
     public static boolean isTelegramEnabled() { return telegramEnabled; }
     public static String getTelegramBotToken() { return telegramBotToken; }
     public static String getTelegramChatId() { return telegramChatId; }
+
+    public static double getAlertDwellMinutesDefault() { return alertDwellMinutesDefault; }
+    public static double getAlertRecoveryMarginDefault() { return alertRecoveryMarginDefault; }
+
+    // --- Advanced Config getters ---
+    // Read directly from a cached Properties object to avoid file IO on every call, but updated by reload()
+    private static Properties currentProps = new Properties();
+    
+    private static double getDouble(String key, double def) {
+        try { return Double.parseDouble(currentProps.getProperty(key, String.valueOf(def)).trim()); }
+        catch (Exception e) { return def; }
+    }
+    private static int getInt(String key, int def) {
+        try { return Integer.parseInt(currentProps.getProperty(key, String.valueOf(def)).trim()); }
+        catch (Exception e) { return def; }
+    }
+
+    public static double getAlertRemindMinutes() { return getDouble("alert.remind.minutes", 5.0); }
+    public static int getTrendWindowSize() { return getInt("trend.window.size", 12); }
+    public static long getTrendMinSpanSec() { return (long)getDouble("trend.min.span.sec", 45.0); }
+    public static double getTrendHorizonMinutes() { return getDouble("trend.horizon.minutes", 5.0); }
+    public static double getTrendMinSlopePerMin() { return getDouble("trend.min.slope.per.min", 0.03); }
+    public static double getTrendCooldownMinutes() { return getDouble("trend.cooldown.minutes", 10.0); }
+    public static long getOfflineMinSec() { return (long)getDouble("offline.min.sec", 15.0); }
+    public static double getOfflineFactor() { return getDouble("offline.factor", 3.0); }
+    public static long getBackupOfflineMinSec() { return (long)getDouble("backup.offline.min.sec", 20.0); }
+    public static double getBackupOfflineFactor() { return getDouble("backup.offline.factor", 3.0); }
+    public static double getBackupPullback() { return getDouble("backup.pullback", 0.15); }
+    public static double getBackupNoise() { return getDouble("backup.noise", 0.15); }
+    public static long getBackupPollSec() { return (long)getDouble("backup.poll.sec", 5.0); }
+
+    public static int getAnomalyStuckMinCount() { return getInt("anomaly.stuck.min.count", 5); }
+    public static double getAnomalyStuckMinutes() { return getDouble("anomaly.stuck.minutes", 10.0); }
+    public static double getAnomalyJumpStddevMultiple() { return getDouble("anomaly.jump.stddev.multiple", 4.0); }
+    public static double getAnomalyJumpMinRate() { return getDouble("anomaly.jump.min.rate", 1.5); }
+
+    public static synchronized void setAdvancedConfigs(Map<String, String> configs) {
+        saveProperties(configs);
+        load();
+    }
+
+    public static synchronized void setAlertDefaults(double dwellMins, double recoveryMargin) {
+        alertDwellMinutesDefault = dwellMins;
+        alertRecoveryMarginDefault = recoveryMargin;
+        Map<String, String> m = new LinkedHashMap<>();
+        m.put(ALERT_DWELL_MINUTES_DEFAULT, String.valueOf(alertDwellMinutesDefault));
+        m.put(ALERT_RECOVERY_MARGIN_DEFAULT, String.valueOf(alertRecoveryMarginDefault));
+        saveProperties(m);
+    }
 
     /** Lưu cấu hình Telegram. enabled=false thì AlertNotifier sẽ không gọi Telegram API nữa. */
     public static synchronized void setTelegramConfig(boolean enabled, String botToken, String chatId) {
@@ -156,8 +211,10 @@ public class ConfigUtil {
             p.load(in);
         } catch (IOException e) {
             System.err.println("[Config] Không đọc được " + CONFIG_FILE + ", dùng cấu hình mặc định: " + e.getMessage());
+            currentProps = new Properties();
             return;
         }
+        currentProps = p;
 
         String secret = p.getProperty("shared.secret");
         if (secret != null && !secret.trim().isEmpty()) sharedSecret = secret.trim();
@@ -169,6 +226,13 @@ public class ConfigUtil {
         telegramChatId = p.getProperty("telegram.chat.id", "").trim();
         adminPasswordHash = p.getProperty("admin.password.hash", "").trim();
         adminPasswordSalt = p.getProperty("admin.password.salt", "").trim();
+
+        try {
+            alertDwellMinutesDefault = Double.parseDouble(p.getProperty(ALERT_DWELL_MINUTES_DEFAULT, "2.0").trim());
+        } catch (NumberFormatException ignored) {}
+        try {
+            alertRecoveryMarginDefault = Double.parseDouble(p.getProperty(ALERT_RECOVERY_MARGIN_DEFAULT, "0.5").trim());
+        } catch (NumberFormatException ignored) {}
 
         // Đọc + kiểm tra ĐỦ 4 giá trị trước rồi mới gán, tránh trạng thái nửa vời nếu 1 giá trị hỏng
         try {

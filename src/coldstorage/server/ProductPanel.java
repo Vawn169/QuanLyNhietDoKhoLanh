@@ -16,7 +16,7 @@ import java.util.Set;
  * Tab 1 "Danh mục sản phẩm": thêm/xóa sản phẩm, mỗi sản phẩm có dải nhiệt độ an toàn riêng.
  * Tab 2 "Sản phẩm trong kho": gán/gỡ sản phẩm cho từng kho.
  */
-public class ProductPanel extends JDialog {
+public class ProductPanel extends JPanel {
 
     private final MonitorServer server;
 
@@ -32,12 +32,13 @@ public class ProductPanel extends JDialog {
     private JList<Product> assignedList;
     private JComboBox<Product> productCombo;
     private JLabel effectiveLabel;
+    private JTextField dwellField;
+    private JTextField marginField;
+    private JTextField maintenanceField;
+    private JLabel maintenanceStatusLabel;
 
-    public ProductPanel(JFrame owner, MonitorServer server) {
-        super(owner, "Quản lý sản phẩm", true);
+    public ProductPanel(MonitorServer server) {
         this.server = server;
-        setSize(620, 560);
-        setLocationRelativeTo(owner);
         setLayout(new BorderLayout(10, 10));
 
         JTabbedPane tabs = new JTabbedPane();
@@ -202,9 +203,42 @@ public class ProductPanel extends JDialog {
         assign.add(productCombo, BorderLayout.CENTER);
         assign.add(assignBtn, BorderLayout.EAST);
 
+        // --- cấu hình cảnh báo riêng ---
+        JPanel overridePanel = new JPanel(new FlowLayout(FlowLayout.LEFT));
+        overridePanel.setBorder(BorderFactory.createTitledBorder("Cấu hình cảnh báo riêng (trống = mặc định)"));
+        overridePanel.add(new JLabel("Độ trễ (phút):"));
+        dwellField = new JTextField(5);
+        overridePanel.add(dwellField);
+        overridePanel.add(new JLabel("Biên hồi phục (°C):"));
+        marginField = new JTextField(5);
+        overridePanel.add(marginField);
+        JButton saveOverrideBtn = new JButton("Lưu");
+        saveOverrideBtn.addActionListener(e -> saveOverrides());
+        overridePanel.add(saveOverrideBtn);
+
+        // --- bảo trì kho ---
+        JPanel maintenancePanel = new JPanel(new FlowLayout(FlowLayout.LEFT));
+        maintenancePanel.setBorder(BorderFactory.createTitledBorder("Bảo trì kho (Tắt cảnh báo)"));
+        maintenancePanel.add(new JLabel("Bảo trì trong (phút):"));
+        maintenanceField = new JTextField(5);
+        maintenancePanel.add(maintenanceField);
+        JButton btnMaintenance = new JButton("Kích hoạt");
+        btnMaintenance.addActionListener(e -> setMaintenance());
+        maintenancePanel.add(btnMaintenance);
+        JButton btnStopMaintenance = new JButton("Dừng");
+        btnStopMaintenance.addActionListener(e -> stopMaintenance());
+        maintenancePanel.add(btnStopMaintenance);
+        maintenanceStatusLabel = new JLabel("");
+        maintenancePanel.add(maintenanceStatusLabel);
+
+        JPanel bottomPanel = new JPanel(new GridLayout(3, 1, 6, 6));
+        bottomPanel.add(assign);
+        bottomPanel.add(overridePanel);
+        bottomPanel.add(maintenancePanel);
+
         panel.add(top, BorderLayout.NORTH);
         panel.add(center, BorderLayout.CENTER);
-        panel.add(assign, BorderLayout.SOUTH);
+        panel.add(bottomPanel, BorderLayout.SOUTH);
         return panel;
     }
 
@@ -233,8 +267,24 @@ public class ProductPanel extends JDialog {
         String wh = currentWarehouse();
         if (wh.isEmpty()) {
             effectiveLabel.setText("Chưa chọn kho.");
+            dwellField.setText("");
+            marginField.setText("");
             return;
         }
+        
+        coldstorage.util.DatabaseUtil.WarehouseOverrides overrides = coldstorage.util.DatabaseUtil.getWarehouseOverrides(wh);
+        dwellField.setText(overrides.dwellMinutes != null ? String.valueOf(overrides.dwellMinutes) : "");
+        marginField.setText(overrides.recoveryMargin != null ? String.valueOf(overrides.recoveryMargin) : "");
+
+        Long maintenance = coldstorage.util.DatabaseUtil.getWarehouseMaintenance(wh);
+        if (maintenance != null && maintenance > System.currentTimeMillis()) {
+            maintenanceStatusLabel.setText("Đang bảo trì tới " + new java.text.SimpleDateFormat("HH:mm:ss dd/MM").format(new java.util.Date(maintenance)));
+            maintenanceStatusLabel.setForeground(Color.RED);
+        } else {
+            maintenanceStatusLabel.setText("Đang hoạt động");
+            maintenanceStatusLabel.setForeground(Color.BLACK);
+        }
+
         List<Product> products = ProductUtil.getProductsOf(wh);
         for (Product p : products) assignedModel.addElement(p);
 
@@ -295,6 +345,46 @@ public class ProductPanel extends JDialog {
         if (p == null) return;
         ProductUtil.unassignProduct(currentWarehouse(), p.getId());
         refreshCatalog();
+        refreshAssigned();
+        server.refreshAllRows();
+    }
+
+    private void saveOverrides() {
+        String wh = currentWarehouse();
+        if (wh.isEmpty()) return;
+        Double dwell = null;
+        Double margin = null;
+        try {
+            String d = dwellField.getText().trim();
+            if (!d.isEmpty()) dwell = Double.parseDouble(d);
+            String m = marginField.getText().trim();
+            if (!m.isEmpty()) margin = Double.parseDouble(m);
+        } catch (NumberFormatException e) {
+            JOptionPane.showMessageDialog(this, "Vui lòng nhập số hợp lệ.", "Lỗi nhập liệu", JOptionPane.ERROR_MESSAGE);
+            return;
+        }
+        coldstorage.util.DatabaseUtil.updateWarehouseOverrides(wh, dwell, margin);
+        JOptionPane.showMessageDialog(this, "Đã lưu cấu hình riêng cho kho " + wh, "Thành công", JOptionPane.INFORMATION_MESSAGE);
+    }
+
+    private void setMaintenance() {
+        String wh = currentWarehouse();
+        if (wh.isEmpty()) return;
+        try {
+            int mins = Integer.parseInt(maintenanceField.getText().trim());
+            long until = System.currentTimeMillis() + mins * 60_000L;
+            server.startMaintenance(wh, until);
+            refreshAssigned();
+            server.refreshAllRows();
+        } catch (NumberFormatException e) {
+            JOptionPane.showMessageDialog(this, "Nhập số phút hợp lệ.");
+        }
+    }
+
+    private void stopMaintenance() {
+        String wh = currentWarehouse();
+        if (wh.isEmpty()) return;
+        server.stopMaintenance(wh);
         refreshAssigned();
         server.refreshAllRows();
     }

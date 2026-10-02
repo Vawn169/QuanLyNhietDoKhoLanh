@@ -12,12 +12,10 @@ import java.awt.*;
  * 1. Đổi mật khẩu Quản trị (SHA-256 + salt, xem ConfigUtil).
  * 2. Bật/tắt và cấu hình thông báo đẩy Telegram (xem TelegramNotifier để biết cách lấy bot token/chat id).
  */
-public class SecuritySettingsDialog extends JDialog {
+public class SecuritySettingsDialog extends JPanel {
 
-    public SecuritySettingsDialog(JFrame owner) {
-        super(owner, "Bảo mật & Thông báo", true);
+    public SecuritySettingsDialog() {
         setLayout(new BorderLayout(10, 10));
-        setLocationRelativeTo(owner);
 
         JPanel content = new JPanel();
         content.setLayout(new BoxLayout(content, BoxLayout.Y_AXIS));
@@ -27,7 +25,6 @@ public class SecuritySettingsDialog extends JDialog {
         content.add(buildTelegramPanel());
 
         add(new JScrollPane(content), BorderLayout.CENTER);
-        setSize(460, 430);
     }
 
     private JPanel buildPasswordPanel() {

@@ -90,10 +90,21 @@ public class StatsPanel extends JPanel {
         linesTitle.setBorder(BorderFactory.createEmptyBorder(12, 4, 6, 4));
 
         // ----- Thanh công cụ: xuất báo cáo -----
+        JPanel toolbar = new JPanel(new FlowLayout(FlowLayout.RIGHT, 6, 4));
+        
+        JTextField fromField = new JTextField(10);
+        fromField.setToolTipText("Từ ngày (dd/MM/yyyy)");
+        JTextField toField = new JTextField(10);
+        toField.setToolTipText("Đến ngày (dd/MM/yyyy)");
+        
+        toolbar.add(new JLabel("Từ (dd/MM/yyyy):"));
+        toolbar.add(fromField);
+        toolbar.add(new JLabel("Đến (dd/MM/yyyy):"));
+        toolbar.add(toField);
+
         JButton exportBtn = new JButton("⭳ Xuất báo cáo (CSV)");
         exportBtn.setToolTipText("Xuất tổng hợp theo kho + lịch sử sự cố ra file CSV, mở trực tiếp bằng Excel");
-        exportBtn.addActionListener(e -> exportReport());
-        JPanel toolbar = new JPanel(new FlowLayout(FlowLayout.RIGHT, 6, 4));
+        exportBtn.addActionListener(e -> exportReport(fromField.getText(), toField.getText()));
         toolbar.add(exportBtn);
 
         JPanel header = new JPanel(new BorderLayout());
@@ -140,7 +151,26 @@ public class StatsPanel extends JPanel {
     }
 
     /** Chọn nơi lưu rồi xuất báo cáo CSV (tổng hợp theo kho + lịch sử sự cố). Truy vấn DB chạy nền, không treo UI. */
-    private void exportReport() {
+    private void exportReport(String fromStr, String toStr) {
+        Long fromM = null, toM = null;
+        SimpleDateFormat sdf = new SimpleDateFormat("dd/MM/yyyy");
+        sdf.setLenient(false);
+        try {
+            if (fromStr != null && !fromStr.trim().isEmpty()) {
+                fromM = sdf.parse(fromStr.trim()).getTime();
+            }
+            if (toStr != null && !toStr.trim().isEmpty()) {
+                toM = sdf.parse(toStr.trim()).getTime() + 86400000L - 1; // hết ngày
+            }
+        } catch (Exception ex) {
+            JOptionPane.showMessageDialog(this, "Ngày không hợp lệ. Định dạng cần nhập: dd/MM/yyyy", 
+                    "Lỗi định dạng", JOptionPane.ERROR_MESSAGE);
+            return;
+        }
+
+        final Long fromMillis = fromM;
+        final Long toMillis = toM;
+
         JFileChooser chooser = new JFileChooser();
         chooser.setSelectedFile(new java.io.File(
                 "bao_cao_kho_lanh_" + new java.text.SimpleDateFormat("yyyyMMdd_HHmm").format(new Date()) + ".csv"));
@@ -157,7 +187,7 @@ public class StatsPanel extends JPanel {
             @Override
             protected Void doInBackground() {
                 try {
-                    coldstorage.util.ReportExportUtil.export(target);
+                    coldstorage.util.ReportExportUtil.export(target, fromMillis, toMillis);
                 } catch (Exception ex) {
                     error = ex.getMessage();
                 }

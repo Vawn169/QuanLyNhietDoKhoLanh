@@ -34,32 +34,39 @@ public class SensorHandler implements Runnable {
         this.callback = callback;
     }
 
-    private void reject(String reason) {
+    private void reject(String reason, String sensorId) {
         SecurityUtil.countRejected();
-        System.err.println("[SensorHandler] TỪ CHỐI gói tin: " + reason + ", IP=" + sourceIp);
+        System.err.println("[SensorHandler] TỪ CHỐI gói tin: " + reason + ", IP=" + sourceIp + (sensorId != null ? ", Sensor=" + sensorId : ""));
+        DatabaseUtil.insertRejectedLog(serverReceivedAt, sourceIp, reason, sensorId);
     }
 
     @Override
     public void run() {
         try {
             if (!SecurityUtil.isIpAllowed(sourceIp)) {
-                reject("IP không nằm trong whitelist");
+                reject("IP không nằm trong whitelist", null);
                 return;
             }
 
-            TemperatureData data = TemperatureData.fromPacketString(rawPacket);
-            data.setServerReceivedAt(serverReceivedAt);
+            TemperatureData data;
+            try {
+                data = TemperatureData.fromPacketString(rawPacket);
+                data.setServerReceivedAt(serverReceivedAt);
+            } catch (Exception e) {
+                reject("Sai định dạng gói tin", null);
+                return;
+            }
 
             if (!SecurityUtil.isFresh(data.getTimestamp(), serverReceivedAt)) {
-                reject("timestamp lệch quá ngưỡng cho phép (đồng hồ cảm biến sai hoặc nghi ngờ replay)");
+                reject("Timestamp lệch quá ngưỡng (đồng hồ sai hoặc replay)", data.getSensorId());
                 return;
             }
             if (!SecurityUtil.isSignatureValid(data)) {
-                reject("chữ ký HMAC không hợp lệ");
+                reject("Chữ ký HMAC không hợp lệ", data.getSensorId());
                 return;
             }
             if (SecurityUtil.isReplay(data)) {
-                reject("gói tin cũ/trùng (nghi ngờ replay attack)");
+                reject("Gói tin cũ/trùng (nghi ngờ replay attack)", data.getSensorId());
                 return;
             }
 
@@ -84,12 +91,13 @@ public class SensorHandler implements Runnable {
             // chỉ không kích hoạt START/REMIND/RECOVERED.
             AlertStateTracker.Event event = AlertStateTracker.Event.NONE;
             if (!BackupUtil.isBackupSource(data)) {
-                event = AlertStateTracker.update(data, status);
+                AlertStateTracker.UpdateResult updateResult = AlertStateTracker.update(data, status);
+                event = updateResult.event;
                 switch (event) {
                     case START:
                         // Mở sự cố trong DB TRƯỚC khi gửi thông báo (gửi có thể chậm: log/email/Telegram). Nếu để sau,
                         // 1 gói WARNING tệ hơn tới trong lúc đó (luồng khác) sẽ không thấy sự cố đang mở và bị mất đỉnh.
-                        DatabaseUtil.startAlertIncident(data.getWarehouseName(), data.getTimestamp(), data.getTemperature());
+                        DatabaseUtil.startAlertIncident(data.getWarehouseName(), updateResult.breachSince, data.getTemperature());
                         AlertNotifier.sendAlert(data, false);
                         break;
                     case REMIND:
@@ -118,6 +126,8 @@ public class SensorHandler implements Runnable {
                 } else {
                     TrendTracker.clear(data.getWarehouseName()); // đã vượt ngưỡng thật thì không cần dự báo nữa
                 }
+                
+                coldstorage.util.SensorAnomalyDetector.update(data);
             }
 
             if (callback != null) {

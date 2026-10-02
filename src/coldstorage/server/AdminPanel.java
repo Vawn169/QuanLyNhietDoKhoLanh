@@ -15,7 +15,7 @@ import java.util.Set;
  * 2. Thêm/xóa cảm biến giả lập (chạy thử nghiệm ngay trong tiến trình Server, tiện cho việc demo
  *    thêm 1 kho mới mà không cần mở thêm cửa sổ SensorLauncher riêng).
  */
-public class AdminPanel extends JDialog {
+public class AdminPanel extends JPanel {
 
     private final MonitorServer server;
 
@@ -27,11 +27,8 @@ public class AdminPanel extends JDialog {
     private JComboBox<String> deleteWarehouseCombo;
     private JCheckBox deleteHistoryCheck;
 
-    public AdminPanel(JFrame owner, MonitorServer server) {
-        super(owner, "Quản trị hệ thống", true);
+    public AdminPanel(MonitorServer server) {
         this.server = server;
-        setSize(520, 660);
-        setLocationRelativeTo(owner);
         setLayout(new BorderLayout(10, 10));
 
         add(buildThresholdPanel(), BorderLayout.NORTH);

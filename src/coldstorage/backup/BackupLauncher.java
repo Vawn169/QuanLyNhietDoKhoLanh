@@ -56,6 +56,19 @@ public class BackupLauncher {
                 for (Map.Entry<String, String> entry : warehouses.entrySet()) {
                     String name = entry.getKey();
                     String type = entry.getValue();
+
+                    // Kho đang bảo trì: không kích hoạt dự phòng, và dừng nếu đang chạy
+                    Long maint = DatabaseUtil.getWarehouseMaintenance(name);
+                    if (maint != null && System.currentTimeMillis() < maint) {
+                        BackupSensorClient existing = activeByWarehouse.get(name);
+                        if (existing != null) {
+                            existing.stop();
+                            activeByWarehouse.remove(name);
+                            System.out.println("[Dự phòng] Kho '" + name + "' đang bảo trì, dừng theo dõi.");
+                        }
+                        continue;
+                    }
+
                     BackupSensorClient existing = activeByWarehouse.get(name);
                     // Luồng có thể đã tự dừng (kho từng bị xóa rồi được đăng ký lại) -> dựng lại luồng mới
                     if (existing == null || !existing.isAlive()) {

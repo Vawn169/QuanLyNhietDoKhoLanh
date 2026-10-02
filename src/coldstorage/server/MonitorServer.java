@@ -11,6 +11,7 @@ import coldstorage.util.ProductUtil;
 
 import javax.swing.*;
 import javax.swing.table.DefaultTableModel;
+import javax.swing.table.TableRowSorter;
 import java.awt.*;
 import java.awt.event.WindowAdapter;
 import java.awt.event.WindowEvent;
@@ -56,6 +57,12 @@ public class MonitorServer extends JFrame {
     private TemperatureChartPanel dongChartPanel;
     private TemperatureChartPanel matChartPanel;
 
+    // ---- Bộ lọc bảng trạng thái ----
+    private TableRowSorter<DefaultTableModel> tableSorter;
+    private JComboBox<String> filterTypeCombo;
+    private JComboBox<String> filterStatusCombo;
+    private JTextField filterNameField;
+
     // ---- Các cấu trúc dưới đây CHỈ được truy cập trên luồng Swing (EDT) nên không cần đồng bộ ----
     private final Map<String, Integer> rowIndexByWarehouse = new HashMap<>();
     private final Map<String, Long> lastAppliedTimestamp = new HashMap<>();
@@ -74,6 +81,7 @@ public class MonitorServer extends JFrame {
     private DatagramSocket serverSocket;
     private volatile boolean running = true;
     private int droppedPackets = 0;
+    private WarehouseCardPanel warehouseCardPanel;
 
     public MonitorServer() {
         setTitle("Hệ thống giám sát nhiệt độ kho lạnh - Server");
@@ -107,28 +115,20 @@ public class MonitorServer extends JFrame {
     private void initUI() {
         setLayout(new BorderLayout(10, 10));
 
-        // ----- Thanh công cụ trên cùng -----
-        JPanel topBar = new JPanel(new FlowLayout(FlowLayout.RIGHT, 8, 6));
-        JButton productBtn = new JButton("🧊 Sản phẩm");
-        productBtn.addActionListener(e -> new ProductPanel(this, this).setVisible(true));
-        topBar.add(productBtn);
-        JButton adminBtn = new JButton("⚙ Quản trị");
-        // Chỉ mở AdminPanel nếu đăng nhập đúng mật khẩu (hoặc chưa từng đặt mật khẩu -> cho qua, tương thích ngược)
-        adminBtn.addActionListener(e -> {
-            if (LoginDialog.authenticate(this)) {
-                new AdminPanel(this, this).setVisible(true);
-            }
-        });
-        topBar.add(adminBtn);
-        JButton securityBtn = new JButton("🔒 Bảo mật");
-        // Đổi mật khẩu Quản trị cũng cần đăng nhập trước (trừ lần đầu chưa từng đặt mật khẩu)
-        securityBtn.addActionListener(e -> {
-            if (LoginDialog.authenticate(this)) {
-                new SecuritySettingsDialog(this).setVisible(true);
-            }
-        });
-        topBar.add(securityBtn);
-        add(topBar, BorderLayout.NORTH);
+        // UI chính sẽ chia thành 2 phần: Sidebar trái (menu) và Content phải (CardLayout)
+        JPanel mainPanel = new JPanel(new BorderLayout(0, 0));
+        add(mainPanel, BorderLayout.CENTER);
+
+        JPanel sidebar = new JPanel();
+        sidebar.setLayout(new BoxLayout(sidebar, BoxLayout.Y_AXIS));
+        sidebar.setPreferredSize(new Dimension(200, 0));
+        sidebar.setBackground(new Color(40, 44, 52));
+        sidebar.setBorder(BorderFactory.createEmptyBorder(10, 10, 10, 10));
+
+        JPanel contentCards = new JPanel(new CardLayout());
+        
+        mainPanel.add(sidebar, BorderLayout.WEST);
+        mainPanel.add(contentCards, BorderLayout.CENTER);
 
         // ----- Tab "Giám sát thực tế" -----
         JPanel monitorTab = new JPanel(new BorderLayout(10, 10));
@@ -160,8 +160,62 @@ public class MonitorServer extends JFrame {
         statusTable.setDefaultRenderer(Object.class, new StatusRowRenderer());
         int[] widths = {110, 80, 250, 100, 140, 175, 110};
         for (int i = 0; i < widths.length; i++) statusTable.getColumnModel().getColumn(i).setPreferredWidth(widths[i]);
+
+        // RowSorter cho phép sắp xếp + lọc
+        tableSorter = new TableRowSorter<>(tableModel);
+        statusTable.setRowSorter(tableSorter);
+
+        // --- Thanh lọc ---
+        JPanel filterBar = new JPanel(new FlowLayout(FlowLayout.LEFT, 8, 4));
+        filterBar.add(new JLabel("Loại kho:"));
+        filterTypeCombo = new JComboBox<>(new String[]{"Tất cả", "Kho đông", "Kho mát"});
+        filterTypeCombo.addActionListener(e -> applyTableFilter());
+        filterBar.add(filterTypeCombo);
+
+        filterBar.add(new JLabel("Trạng thái:"));
+        filterStatusCombo = new JComboBox<>(new String[]{"Tất cả", "An toàn", "Cảnh báo", "Mất tín hiệu", "Dự phòng", "Bảo trì", "Sắp vượt ngưỡng", "Nghi cảm biến lỗi"});
+        filterStatusCombo.addActionListener(e -> applyTableFilter());
+        filterBar.add(filterStatusCombo);
+
+        filterBar.add(new JLabel("Tên kho:"));
+        filterNameField = new JTextField(12);
+        filterNameField.getDocument().addDocumentListener(new javax.swing.event.DocumentListener() {
+            public void insertUpdate(javax.swing.event.DocumentEvent e) { applyTableFilter(); }
+            public void removeUpdate(javax.swing.event.DocumentEvent e) { applyTableFilter(); }
+            public void changedUpdate(javax.swing.event.DocumentEvent e) { applyTableFilter(); }
+        });
+        filterBar.add(filterNameField);
+
+        JButton clearFilterBtn = new JButton("Xóa lọc");
+        clearFilterBtn.addActionListener(e -> {
+            filterTypeCombo.setSelectedIndex(0);
+            filterStatusCombo.setSelectedIndex(0);
+            filterNameField.setText("");
+        });
+        filterBar.add(clearFilterBtn);
+
+        JButton toggleViewBtn = new JButton("Chuyển Bảng/Thẻ");
+        filterBar.add(toggleViewBtn);
+
         JScrollPane tableScroll = new JScrollPane(statusTable);
         tableScroll.setBorder(BorderFactory.createTitledBorder("Trạng thái kho lạnh theo thời gian thực"));
+
+        warehouseCardPanel = new WarehouseCardPanel();
+        warehouseCardPanel.setBorder(BorderFactory.createTitledBorder("Trạng thái kho lạnh theo thời gian thực"));
+
+        JPanel viewPanel = new JPanel(new CardLayout());
+        viewPanel.add(tableScroll, "TABLE");
+        viewPanel.add(warehouseCardPanel, "CARD");
+
+        toggleViewBtn.addActionListener(e -> {
+            CardLayout cl = (CardLayout) viewPanel.getLayout();
+            cl.next(viewPanel);
+        });
+
+        // Gộp thanh lọc + bảng vào 1 panel
+        JPanel tableWithFilter = new JPanel(new BorderLayout());
+        tableWithFilter.add(filterBar, BorderLayout.NORTH);
+        tableWithFilter.add(viewPanel, BorderLayout.CENTER);
 
         // 2 biểu đồ đặt cạnh nhau: kho đông (bên trái) và kho mát (bên phải)
         dongChartPanel = new TemperatureChartPanel("Kho đông - nhiệt độ theo thời gian");
@@ -170,19 +224,71 @@ public class MonitorServer extends JFrame {
         chartsPanel.add(dongChartPanel);
         chartsPanel.add(matChartPanel);
 
-        JSplitPane splitPane = new JSplitPane(JSplitPane.VERTICAL_SPLIT, tableScroll, chartsPanel);
+        JSplitPane splitPane = new JSplitPane(JSplitPane.VERTICAL_SPLIT, tableWithFilter, chartsPanel);
         splitPane.setResizeWeight(0.35);
         monitorTab.add(splitPane, BorderLayout.CENTER);
 
 
         // ----- Tab "Thống kê" -----
         statsPanel = new StatsPanel();
+        
+        // Khởi tạo các panel mới
+        ProductPanel productPanel = new ProductPanel(this);
+        AdminPanel adminPanel = new AdminPanel(this);
+        SecuritySettingsDialog securityPanel = new SecuritySettingsDialog();
+        AdvancedConfigDialog advConfigPanel = new AdvancedConfigDialog();
+        AlertHistoryPanel alertHistoryPanel = new AlertHistoryPanel();
+        RejectedLogPanel rejectedLogPanel = new RejectedLogPanel();
 
-        JTabbedPane tabbedPane = new JTabbedPane();
-        tabbedPane.addTab("Giám sát thực tế", monitorTab);
-        tabbedPane.addTab("Thống kê", statsPanel);
-        tabbedPane.addTab("Lịch sử sự cố", new AlertHistoryPanel());
-        add(tabbedPane, BorderLayout.CENTER);
+        contentCards.add(monitorTab, "Giám sát");
+        contentCards.add(statsPanel, "Thống kê");
+        contentCards.add(alertHistoryPanel, "Lịch sử sự cố");
+        contentCards.add(rejectedLogPanel, "Nhật ký từ chối");
+        contentCards.add(productPanel, "Sản phẩm");
+        contentCards.add(adminPanel, "Quản trị");
+        contentCards.add(securityPanel, "Bảo mật");
+        contentCards.add(advConfigPanel, "Nâng cao");
+
+        // Các nút trong Sidebar
+        String[] menuItems = {"Giám sát", "Thống kê", "Lịch sử sự cố", "Nhật ký từ chối", "Sản phẩm", "Quản trị", "Bảo mật", "Nâng cao"};
+        java.util.List<JButton> menuBtns = new ArrayList<>();
+        
+        JButton loginBtn = new JButton("Đăng nhập");
+        loginBtn.setAlignmentX(Component.CENTER_ALIGNMENT);
+        loginBtn.setMaximumSize(new Dimension(Integer.MAX_VALUE, 40));
+
+        for (String item : menuItems) {
+            JButton btn = new JButton(item);
+            btn.setAlignmentX(Component.CENTER_ALIGNMENT);
+            btn.setMaximumSize(new Dimension(Integer.MAX_VALUE, 40));
+            btn.setFocusPainted(false);
+            
+            // Ban đầu khóa Quản trị, Bảo mật, Nâng cao
+            if (item.equals("Quản trị") || item.equals("Bảo mật") || item.equals("Nâng cao")) {
+                btn.setEnabled(false);
+            }
+            
+            btn.addActionListener(e -> {
+                CardLayout cl = (CardLayout) contentCards.getLayout();
+                cl.show(contentCards, item);
+            });
+            sidebar.add(btn);
+            sidebar.add(Box.createVerticalStrut(10));
+            menuBtns.add(btn);
+        }
+        
+        sidebar.add(Box.createVerticalGlue());
+        sidebar.add(loginBtn);
+        
+        loginBtn.addActionListener(e -> {
+            if (LoginDialog.authenticate(this)) {
+                for (JButton btn : menuBtns) {
+                    btn.setEnabled(true);
+                }
+                loginBtn.setText("Đã đăng nhập");
+                loginBtn.setEnabled(false);
+            }
+        });
     }
 
     /**
@@ -281,7 +387,10 @@ public class MonitorServer extends JFrame {
     // ===================== PHÁT HIỆN MẤT TÍN HIỆU =====================
 
     private void startOfflineWatcher() {
-        javax.swing.Timer timer = new javax.swing.Timer(OFFLINE_CHECK_MS, e -> checkOffline());
+        javax.swing.Timer timer = new javax.swing.Timer(OFFLINE_CHECK_MS, e -> {
+            checkOffline();
+            cleanExpiredMaintenance();
+        });
         timer.setInitialDelay(OFFLINE_CHECK_MS);
         timer.start();
     }
@@ -300,6 +409,12 @@ public class MonitorServer extends JFrame {
             dongChartPanel.removeSeries(lost.warehouse);
             matChartPanel.removeSeries(lost.warehouse);
             if (!lost.silent) {
+                // Phòng trường hợp bảo trì được bật nhưng mute() chưa kịp áp dụng (kho xuất
+                // hiện sau khi bảo trì đã được đặt): kiểm tra DB 1 lần nữa trước khi gửi cảnh báo
+                Long maint = DatabaseUtil.getWarehouseMaintenance(lost.warehouse);
+                if (maint != null && System.currentTimeMillis() < maint) {
+                    continue; // kho đang bảo trì -> bỏ qua cảnh báo mất tín hiệu
+                }
                 try {
                     threadPool.execute(() -> AlertNotifier.sendOffline(lost.warehouse, lost.lastSeenAt));
                 } catch (RejectedExecutionException ignored) {
@@ -308,6 +423,16 @@ public class MonitorServer extends JFrame {
             }
         }
         updateSummaryLabel();
+    }
+
+    /** Quét bảo trì quá hạn và tự dọn, unmute các kho đã hết bảo trì */
+    private void cleanExpiredMaintenance() {
+        java.util.List<String> expired = DatabaseUtil.clearExpiredMaintenance();
+        for (String wh : expired) {
+            offlineTracker.unmute(wh);
+            System.out.println("[Server] Bảo trì kho '" + wh + "' đã hết hạn, tự động dọn.");
+        }
+        if (!expired.isEmpty()) refreshAllRows();
     }
 
     /** Cập nhật hàng thẻ tóm tắt (giữ tên cũ để không phải sửa các chỗ gọi) */
@@ -339,7 +464,14 @@ public class MonitorServer extends JFrame {
         String time = formatTime(data.getTimestamp());
         boolean offline = offlineTracker.isOffline(data.getWarehouseName());
         String statusText;
-        if (BackupUtil.isBackupSource(data)) {
+        Long maintenance = DatabaseUtil.getWarehouseMaintenance(data.getWarehouseName());
+        boolean isMaintenance = maintenance != null && data.getTimestamp() < maintenance;
+
+        if (isMaintenance) {
+            statusText = "🔧 BẢO TRÌ";
+        } else if (coldstorage.util.SensorAnomalyDetector.hasAnomaly(data.getWarehouseName())) {
+            statusText = "🔧 NGHI CẢM BIẾN LỖI";
+        } else if (BackupUtil.isBackupSource(data)) {
             // Cảm biến chính đang mất tín hiệu và bộ dự phòng đang tự gửi số liệu ƯỚC TÍNH thay thế
             statusText = "🔧 DỰ PHÒNG (ước tính)";
         } else if (offline) {
@@ -353,6 +485,9 @@ public class MonitorServer extends JFrame {
         } else {
             statusText = "AN TOÀN";
         }
+        
+        warehouseCardPanel.updateCard(data, offline, isMaintenance, coldstorage.util.SensorAnomalyDetector.hasAnomaly(data.getWarehouseName()));
+
         String threshold = AlertUtil.getThresholdText(data);
         String products = ProductUtil.getProductNames(data.getWarehouseName());
         if (products.isEmpty()) products = "—";
@@ -382,6 +517,44 @@ public class MonitorServer extends JFrame {
         for (TemperatureData data : new ArrayList<>(lastDataByWarehouse.values())) {
             updateTableRow(data, AlertUtil.checkStatus(data));
         }
+    }
+
+    private void applyTableFilter() {
+        if (tableSorter == null) return;
+        java.util.List<RowFilter<DefaultTableModel, Object>> filters = new java.util.ArrayList<>();
+
+        String type = (String) filterTypeCombo.getSelectedItem();
+        if (!"Tất cả".equals(type)) {
+            filters.add(RowFilter.regexFilter("^" + type + "$", 1));
+        }
+
+        String status = (String) filterStatusCombo.getSelectedItem();
+        if (!"Tất cả".equals(status)) {
+            filters.add(RowFilter.regexFilter("(?i)" + status, 5));
+        }
+
+        String name = filterNameField.getText().trim();
+        if (!name.isEmpty()) {
+            filters.add(RowFilter.regexFilter("(?i)" + name, 0));
+        }
+
+        if (filters.isEmpty()) {
+            tableSorter.setRowFilter(null);
+        } else {
+            tableSorter.setRowFilter(RowFilter.andFilter(filters));
+        }
+    }
+
+    /** Bật bảo trì cho kho: ghi DB + mute cảnh báo mất tín hiệu */
+    public void startMaintenance(String warehouseName, long untilMillis) {
+        DatabaseUtil.setWarehouseMaintenance(warehouseName, untilMillis);
+        offlineTracker.mute(warehouseName);
+    }
+
+    /** Tắt bảo trì cho kho: xóa DB + unmute cảnh báo mất tín hiệu */
+    public void stopMaintenance(String warehouseName) {
+        DatabaseUtil.setWarehouseMaintenance(warehouseName, null);
+        offlineTracker.unmute(warehouseName);
     }
 
     /** Danh sách kho đã có dữ liệu trong phiên này (dùng cho ProductPanel). Gọi trên luồng Swing. */
@@ -518,6 +691,7 @@ public class MonitorServer extends JFrame {
                 if (e.getValue() > rowIdx) e.setValue(e.getValue() - 1);
             }
         }
+        if (warehouseCardPanel != null) warehouseCardPanel.removeCard(warehouseName);
 
         lastAppliedTimestamp.remove(warehouseName);
         lastDataByWarehouse.remove(warehouseName);
@@ -594,6 +768,8 @@ public class MonitorServer extends JFrame {
             if (column == 5) { // ô trạng thái: huy hiệu màu
                 Color bg, fg;
                 if (status.contains("DỰ PHÒNG")) { bg = UiTheme.BACKUP_BG; fg = UiTheme.BACKUP_FG; }
+                else if (status.contains("BẢO TRÌ")) { bg = UiTheme.MAINTENANCE_BG; fg = UiTheme.MAINTENANCE_FG; }
+                else if (status.contains("CẢM BIẾN LỖI")) { bg = UiTheme.ANOMALY_BG; fg = UiTheme.ANOMALY_FG; }
                 else if (offline) { bg = UiTheme.OFFLINE_BG; fg = UiTheme.OFFLINE_FG; }
                 else if (status.contains("CẢNH BÁO")) { bg = UiTheme.WARN_BG; fg = UiTheme.WARN_FG; }
                 else if (status.contains("SẮP VƯỢT")) { bg = new Color(255, 224, 178); fg = UiTheme.ACCENT_ORANGE; }

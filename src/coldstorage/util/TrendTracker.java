@@ -23,16 +23,7 @@ public final class TrendTracker {
     private TrendTracker() {
     }
 
-    /** Cửa sổ dữ liệu tối đa dùng để tính xu hướng */
-    private static final int WINDOW_SIZE = 12;
-    /** Chỉ tính xu hướng khi cửa sổ trải dài ít nhất chừng này (tránh vài điểm gần nhau gây nhiễu) */
-    private static final long MIN_SPAN_MS = 45 * 1000;
-    /** Dự báo trước bao nhiêu phút */
-    private static final double HORIZON_MIN = 5.0;
-    /** Tốc độ thay đổi dưới ngưỡng này (°C/phút) coi là nhiễu, không phải xu hướng thật */
-    private static final double MIN_SLOPE_PER_MIN = 0.03;
-    /** Giãn cách tối thiểu giữa 2 lần cảnh báo sớm liên tiếp cho CÙNG 1 kho, tránh làm phiền liên tục */
-    private static final long WARN_COOLDOWN_MS = 10 * 60 * 1000;
+
 
     private static final Map<String, Deque<double[]>> WINDOWS = new HashMap<>(); // [timestampMs, temperature]
     private static final Map<String, Long> LAST_WARN_AT = new HashMap<>();
@@ -67,21 +58,21 @@ public final class TrendTracker {
     private static Projection compute(TemperatureData data, String name) {
         Deque<double[]> window = WINDOWS.computeIfAbsent(name, k -> new ArrayDeque<>());
         window.addLast(new double[]{data.getTimestamp(), data.getTemperature()});
-        while (window.size() > WINDOW_SIZE) {
+        while (window.size() > ConfigUtil.getTrendWindowSize()) {
             window.removeFirst();
         }
         if (window.size() < 4) return null; // quá ít điểm để tính hồi quy đáng tin
 
         double[] first = window.peekFirst();
         double[] last = window.peekLast();
-        if (last[0] - first[0] < MIN_SPAN_MS) return null; // cửa sổ quá ngắn, dễ nhiễu
+        if (last[0] - first[0] < ConfigUtil.getTrendMinSpanSec() * 1000) return null; // cửa sổ quá ngắn, dễ nhiễu
 
         double slopePerMin = linearRegressionSlopePerMinute(window);
-        if (Math.abs(slopePerMin) < MIN_SLOPE_PER_MIN) return null; // coi như đứng yên
+        if (Math.abs(slopePerMin) < ConfigUtil.getTrendMinSlopePerMin()) return null; // coi như đứng yên
 
         double currentTemp = last[1];
         double[] range = AlertUtil.getSafeRange(data); // {min, max}
-        double projectedTemp = currentTemp + slopePerMin * HORIZON_MIN;
+        double projectedTemp = currentTemp + slopePerMin * ConfigUtil.getTrendHorizonMinutes();
 
         if (slopePerMin > 0 && currentTemp <= range[1] && projectedTemp > range[1]) {
             double minutesToBreach = (range[1] - currentTemp) / slopePerMin;
@@ -121,7 +112,7 @@ public final class TrendTracker {
     public static synchronized boolean shouldWarn(String warehouseName) {
         long now = System.currentTimeMillis();
         Long last = LAST_WARN_AT.get(warehouseName);
-        if (last != null && now - last < WARN_COOLDOWN_MS) return false;
+        if (last != null && now - last < (long)(ConfigUtil.getTrendCooldownMinutes() * 60 * 1000)) return false;
         LAST_WARN_AT.put(warehouseName, now);
         return true;
     }

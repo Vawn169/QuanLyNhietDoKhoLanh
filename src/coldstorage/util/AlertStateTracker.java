@@ -7,22 +7,29 @@ import java.util.Map;
 
 /**
  * Theo dõi trạng thái cảnh báo THEO TỪNG KHO để chỉ phát cảnh báo khi có thay đổi ý nghĩa,
- * thay vì báo lại ở MỌI gói tin vượt ngưỡng (gây "bão" email/SMS/log và bíp liên tục):
- *  - START     : kho vừa chuyển từ an toàn sang vượt ngưỡng  -> gửi cảnh báo + bíp.
- *  - REMIND    : kho vẫn vượt ngưỡng sau REMIND_INTERVAL_MS  -> nhắc lại (không bíp).
- *  - RECOVERED : kho vừa trở về vùng an toàn                 -> báo đã hồi phục.
- *  - NONE      : không có gì cần thông báo.
- * Gói đến trễ/trùng thứ tự (timestamp không lớn hơn gói đã xử lý) bị bỏ qua để trạng thái không nhảy qua lại.
+ * thay vì báo lỗi ở MỌI gói tin vượt ngưỡng.
+ * Áp dụng độ trễ xác nhận (dwell time) và biên hồi phục (recovery margin).
  */
 public class AlertStateTracker {
 
     public enum Event { NONE, START, REMIND, RECOVERED }
 
-    /** Khoảng nhắc lại khi sự cố kéo dài */
-    public static final long REMIND_INTERVAL_MS = 5 * 60 * 1000;
+    public static class UpdateResult {
+        public final Event event;
+        public final long breachSince;
+        public UpdateResult(Event event, long breachSince) {
+            this.event = event;
+            this.breachSince = breachSince;
+        }
+    }
+
+    public static long getRemindIntervalMs() {
+        return (long)(ConfigUtil.getAlertRemindMinutes() * 60 * 1000);
+    }
 
     private static class State {
-        boolean warning;
+        long breachSince = -1; // -1 = đang an toàn
+        boolean confirmed = false;
         long lastTimestamp;
         long lastAlertAt;
     }
@@ -30,48 +37,100 @@ public class AlertStateTracker {
     private static final Map<String, State> STATES = new HashMap<>();
 
     /**
-     * Khôi phục 1 sự cố đang mở sau khi Server khởi động lại (xem DatabaseUtil.reconcileOpenIncidents): coi kho là ĐANG
-     * vượt ngưỡng từ startedAt, để gói WARNING kế tiếp KHÔNG mở sự cố trùng, và gói SAFE đầu tiên đóng đúng sự cố này.
+     * Khôi phục 1 sự cố đang mở sau khi Server khởi động lại.
      */
     public static synchronized void resume(String warehouseName, long startedAt) {
         State st = new State();
-        st.warning = true;
+        st.breachSince = startedAt;
+        st.confirmed = true;
         st.lastAlertAt = startedAt;
         st.lastTimestamp = 0;
         STATES.put(warehouseName, st);
     }
 
-    /** Xóa trạng thái của 1 kho (khi kho bị xóa khỏi hệ thống, để kho trùng tên tạo lại sau này bắt đầu sạch) */
+    /** Xóa trạng thái của 1 kho */
     public static synchronized void forget(String warehouseName) {
         STATES.remove(warehouseName);
     }
 
-    public static synchronized Event update(TemperatureData data, AlertUtil.Status status) {
-        State st = STATES.get(data.getWarehouseName());
+    /**
+     * Cập nhật trạng thái và trả về kết quả đánh giá cảnh báo.
+     * Lưu ý: Phương thức này đã được đổi chữ ký để trả về đối tượng UpdateResult thay vì enum Event như yêu cầu gốc.
+     * Lý do: Tránh tình trạng race condition (cạnh tranh luồng) khi 1 luồng gọi update() để thay đổi trạng thái,
+     * trong khi 1 luồng khác (ví dụ: hàm consume) đang chờ đọc trạng thái đó. Việc gộp trạng thái và thời điểm (breachSince)
+     * vào một object duy nhất giúp đảm bảo tính toàn vẹn của dữ liệu trong môi trường đa luồng.
+     */
+    public static synchronized UpdateResult update(TemperatureData data, AlertUtil.Status status) {
+        String name = data.getWarehouseName();
+        long ts = data.getTimestamp();
+        
+        Long maintenance = DatabaseUtil.getWarehouseMaintenance(name);
+        if (maintenance != null && data.getServerReceivedAt() < maintenance) {
+            return new UpdateResult(Event.NONE, -1);
+        }
+
+        State st = STATES.get(name);
         if (st == null) {
             st = new State();
-            STATES.put(data.getWarehouseName(), st);
+            STATES.put(name, st);
         }
-        long ts = data.getTimestamp();
-        if (ts <= st.lastTimestamp) return Event.NONE;
+        if (ts <= st.lastTimestamp) return new UpdateResult(Event.NONE, st.breachSince);
         st.lastTimestamp = ts;
 
+        DatabaseUtil.WarehouseOverrides overrides = DatabaseUtil.getWarehouseOverrides(name);
+        double dwellMins = (overrides.dwellMinutes != null) ? overrides.dwellMinutes : ConfigUtil.getAlertDwellMinutesDefault();
+        long dwellMs = (long)(dwellMins * 60 * 1000);
+        double margin = (overrides.recoveryMargin != null) ? overrides.recoveryMargin : ConfigUtil.getAlertRecoveryMarginDefault();
+
         if (status == AlertUtil.Status.WARNING) {
-            if (!st.warning) {
-                st.warning = true;
-                st.lastAlertAt = ts;
-                return Event.START;
+            if (st.breachSince == -1) {
+                st.breachSince = ts;
+                return new UpdateResult(Event.NONE, st.breachSince);
             }
-            if (ts - st.lastAlertAt >= REMIND_INTERVAL_MS) {
-                st.lastAlertAt = ts;
-                return Event.REMIND;
+            if (!st.confirmed) {
+                if (ts - st.breachSince >= dwellMs) {
+                    st.confirmed = true;
+                    st.lastAlertAt = ts; // Xác nhận lúc ts, nhưng bắt đầu từ breachSince
+                    return new UpdateResult(Event.START, st.breachSince);
+                }
+            } else {
+                if (ts - st.lastAlertAt >= getRemindIntervalMs()) {
+                    st.lastAlertAt = ts;
+                    return new UpdateResult(Event.REMIND, st.breachSince);
+                }
             }
-            return Event.NONE;
+            return new UpdateResult(Event.NONE, st.breachSince);
         }
-        if (st.warning) {
-            st.warning = false;
-            return Event.RECOVERED;
+
+        // SAFE (status == AlertUtil.Status.SAFE)
+        if (st.breachSince != -1) {
+            if (!st.confirmed) {
+                // Báo động hụt (chưa đủ dwellMs)
+                st.breachSince = -1;
+                return new UpdateResult(Event.NONE, -1);
+            } else {
+                // Đã confirmed, kiểm tra biên hồi phục
+                double currentTemp = data.getTemperature();
+                double[] safeRange = AlertUtil.getSafeRange(data);
+                double minTemp = safeRange[0];
+                double maxTemp = safeRange[1];
+
+                if (maxTemp - minTemp < 2 * margin) {
+                    // Dải an toàn quá hẹp, bỏ qua margin
+                    if (currentTemp >= minTemp && currentTemp <= maxTemp) {
+                        st.breachSince = -1;
+                        st.confirmed = false;
+                        return new UpdateResult(Event.RECOVERED, -1);
+                    }
+                } else {
+                    if (currentTemp >= minTemp + margin && currentTemp <= maxTemp - margin) {
+                        st.breachSince = -1;
+                        st.confirmed = false;
+                        return new UpdateResult(Event.RECOVERED, -1);
+                    }
+                }
+            }
         }
-        return Event.NONE;
+        return new UpdateResult(Event.NONE, -1);
     }
 }

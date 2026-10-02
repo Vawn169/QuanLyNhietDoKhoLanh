@@ -29,6 +29,10 @@ public final class UiTheme {
     public static final Color OFFLINE_FG = new Color(90, 98, 106);
     public static final Color BACKUP_BG = new Color(255, 235, 156);
     public static final Color BACKUP_FG = new Color(133, 82, 0);
+    public static final Color MAINTENANCE_BG = new Color(224, 242, 254);
+    public static final Color MAINTENANCE_FG = new Color(2, 132, 199);
+    public static final Color ANOMALY_BG = new Color(253, 224, 243); // Hồng nhạt
+    public static final Color ANOMALY_FG = new Color(190, 24, 93); // Tím đỏ
 
     // ---- Màu nhấn dùng cho thẻ tóm tắt / biểu đồ ----
     public static final Color ACCENT_BLUE = new Color(37, 99, 235);
@@ -76,19 +80,18 @@ public final class UiTheme {
 
     /** Cài look-and-feel + font + kiểu biểu đồ. Nếu có FlatLaf trong classpath thì dùng, không thì dùng Nimbus có sẵn. */
     public static void install() {
-        boolean ok = false;
+        boolean flatLaf = false;
         try {
             Class.forName("com.formdev.flatlaf.FlatLightLaf").getMethod("setup").invoke(null);
-            ok = true;
+            flatLaf = true;
         } catch (Throwable ignored) {
             // không có FlatLaf -> dùng Nimbus
         }
-        if (!ok) {
+        if (!flatLaf) {
             try {
                 for (UIManager.LookAndFeelInfo info : UIManager.getInstalledLookAndFeels()) {
                     if ("Nimbus".equals(info.getName())) {
                         UIManager.setLookAndFeel(info.getClassName());
-                        ok = true;
                         break;
                     }
                 }
@@ -96,6 +99,11 @@ public final class UiTheme {
                 // giữ giao diện mặc định
             }
         }
+
+        // Log tên L&F đang dùng
+        String lafName = UIManager.getLookAndFeel().getName();
+        System.out.println("[UiTheme] Look-and-Feel: " + lafName
+                + (flatLaf ? " (FlatLaf)" : " (fallback)"));
 
         FontUIResource uiFont = new FontUIResource(font(Font.PLAIN, 13f));
         UIManager.put("defaultFont", uiFont); // Nimbus
@@ -105,6 +113,18 @@ public final class UiTheme {
         }
         UIManager.put("TabbedPane.font", new FontUIResource(font(Font.BOLD, 13f)));
         UIManager.put("TableHeader.font", new FontUIResource(font(Font.BOLD, 13f)));
+
+        // Bo góc chỉ áp dụng khi FlatLaf đang active
+        if (flatLaf) {
+            UIManager.put("Button.arc", 10);
+            UIManager.put("Component.arc", 10);
+            UIManager.put("TextComponent.arc", 8);
+            UIManager.put("ScrollBar.thumbArc", 999);          // viên thuốc
+            UIManager.put("ScrollBar.thumbInsets", new Insets(2, 2, 2, 2));
+            UIManager.put("ScrollBar.track", new Color(240, 242, 245));
+            UIManager.put("TabbedPane.showTabSeparators", true);
+            System.out.println("[UiTheme] Đã bật bo góc FlatLaf (arc=10).");
+        }
 
         installChartTheme();
     }
